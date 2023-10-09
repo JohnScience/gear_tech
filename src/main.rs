@@ -3,6 +3,12 @@ use smallvec::SmallVec;
 
 const THRESHOLD: usize = 200_000;
 
+// TODO: consider using `delegate` crate
+struct CopyingXorSubtasks<'a> {
+    total_size: usize,
+    inner: SmallVec<[CopyingXor<'a>; 32]>,
+}
+
 // This is a generic trait that is an overkill for many use cases.
 // Ideally, it should be implemented for simpler traits.
 pub trait Compute: Sized {
@@ -38,7 +44,7 @@ struct CopyingXor<'a>(&'a [u8]);
 impl<'a> Compute for CopyingXor<'a> {
     type Output = Vec<u8>;
     // TODO: find a way to make this constant better
-    type Subtasks = SmallVec<[CopyingXor<'a>; 32]>;
+    type Subtasks = CopyingXorSubtasks<'a>;
     type Subtask = CopyingXor<'a>;
     type ComputeSubtaskOutput = Vec<u8>;
     type DistributeOutput = ();
@@ -55,24 +61,43 @@ impl<'a> Compute for CopyingXor<'a> {
 
     fn split(self) -> Self::Subtasks {
         let Self(inp) = self;
+        let len = inp.len();
+        // consider using std::thread::available_parallelism()
         let cpu_count = num_cpus::get();
         let mut subtasks = SmallVec::with_capacity(cpu_count);
         // the following assumes that the threads are of equal power
         let smallest_chunk_size = inp.len() / cpu_count;
-        let remainer = inp.len() - smallest_chunk_size * cpu_count;
+        let remainder = inp.len() - smallest_chunk_size * cpu_count;
         let subtask_iter = (0..cpu_count).map(|i| {
-            let start = i * smallest_chunk_size + std::cmp::min(i, remainer);
-            let end = start + smallest_chunk_size + if i < remainer { i } else { 0 };
+            let start = i * smallest_chunk_size + std::cmp::min(i, remainder);
+            let end = start + smallest_chunk_size + if i < remainder { i } else { 0 };
             let Some(slice) = inp.get(start..end) else {
                 unreachable!()
             };
             Self(slice)
         });
         subtasks.extend(subtask_iter);
-        subtasks
+        Self::Subtasks {
+            total_size: len,
+            inner: subtasks,
+        }
     }
 
     fn distribute(subtasks: Self::Subtasks) -> Self::DistributeOutput {
+        let Self::Subtasks {
+            total_size,
+            inner: subtasks,
+        } = subtasks;
+        let n = subtasks.len();
+        let smallest_chunk_size = total_size / n;
+        let remainder = total_size - smallest_chunk_size * n;
+        // TODO: recompute the size of the storage on which the subtasks are executed
+        let iter = (0..subtasks.len()).map(|i| {
+            let cap = smallest_chunk_size + std::cmp::min(i, remainder);
+            Vec::with_capacity(cap)
+        });
+        // TODO: use windows into a single vec
+        let mut vecs: SmallVec<[Vec<u8>; 32]> = iter.collect();
         todo!()
     }
 
